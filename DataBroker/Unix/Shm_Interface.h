@@ -1,7 +1,5 @@
-#ifndef SHM_INT
-#define SHM_INT
+#pragma once
 
-#define _POSIX_C_SOURCE 200809L
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <pthread.h>
@@ -18,11 +16,16 @@
 #include <time.h>
 #include <stdbool.h>
 
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
+#define _BSD_SOURCE
+
 // Data mutex
 extern pthread_mutex_t DATA_Mutx;
 
 // S-function Defines
-#define _BSD_SOURCE
 #define MAX_IO 1000
 
 #ifdef _WIN32
@@ -69,5 +72,3 @@ extern Queue* PUB_DATA_QUEUE;
 
 void enqueue(Queue* q, DATA value);
 void clearQueue(Queue* q);
-
-#endif // SHM_INT

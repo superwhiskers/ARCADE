@@ -27,7 +27,7 @@ void User_Control(void){
 /* Notes: Its important not to fork the process if we are not executing the simulator from the DB.
 The relationship between the parent process and child has to change depending on external or internal
 execution of the simulator. This is the simplest and most stable solution. */
-void *Sim_Control(){
+void *Sim_Control(void* _){
 
     pid_t pid;
     char *args[2];

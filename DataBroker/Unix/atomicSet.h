@@ -1,5 +1,4 @@
-#ifndef atomicSet
-#define atomicSet
+#pragma once
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,5 +10,3 @@ bool checkErrorFlag(void);
 void setErrorFlagFalse(void);
 
 extern atomic_flag errAtomicFlag;
-
-#endif // !atomicSet

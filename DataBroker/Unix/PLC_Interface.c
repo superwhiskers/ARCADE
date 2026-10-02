@@ -3,7 +3,7 @@
 #include "Sem_Stop.h"
 #include "utils.h"
 
-void *PLC_Interface()
+void *PLC_Interface(void* _)
 {
     //  Socket to talk to clients
     void *context = zmq_ctx_new ();

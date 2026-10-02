@@ -1,5 +1,4 @@
-#ifndef dataB
-#define dataB
+#pragma once
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,6 +7,3 @@
 
 extern Special_Flags FLAGS;
 extern Configs CONF;
-
-#endif
-

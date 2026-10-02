@@ -1,5 +1,5 @@
-#ifndef sim_cont
-#define sim_cont
+#pragma once
+
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -12,5 +12,4 @@
 #include <signal.h>
 #include <unistd.h>
 #include <string.h>
-void *Sim_Control();
-#endif
+void *Sim_Control(void*);

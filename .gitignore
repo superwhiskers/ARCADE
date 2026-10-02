@@ -4,3 +4,7 @@
 
 /.vs
 /DataBroker/Windows/.vs
+.direnv/
+*.o
+DataBroker/Unix/DataBroker
+DataBroker/Unix/.ninja_log

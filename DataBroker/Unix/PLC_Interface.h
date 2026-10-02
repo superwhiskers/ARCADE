@@ -1,5 +1,5 @@
-#ifndef plc_int
-#define plc_int
+#pragma once
+
 #include <zmq.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -7,5 +7,4 @@
 #include <assert.h>
 #include <pthread.h>
 #define MSG_BUFFER 256
-void *PLC_Interface();
-#endif
+void *PLC_Interface(void*);

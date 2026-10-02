@@ -1,5 +1,4 @@
-#ifndef ZMQ_CLIENT_H
-#define ZMQ_CLIENT_H
+#pragma once
 
 #include <pthread.h>
 #include <stdbool.h>
@@ -28,5 +27,3 @@ extern ZMQ_TagMap ZMQ_Outputs[MAX_ZMQ_VARS];
 
 void* ZMQ_Client(void* args);
 void CoSim_init();
-
-#endif // ZMQ_CLIENT_H

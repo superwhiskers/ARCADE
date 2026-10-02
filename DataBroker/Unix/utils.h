@@ -1,5 +1,5 @@
-#ifndef UTILS
-#define UTILS
+#pragma once
+
 #include <ctype.h>
 #include <stdbool.h>
 #include <string.h>
@@ -32,5 +32,3 @@ extern Special_Flags FLAGS;
 extern Configs CONF;
 
 extern pthread_mutex_t FLAG_Mutx;
-
-#endif

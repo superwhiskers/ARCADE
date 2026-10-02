@@ -1,5 +1,4 @@
-#ifndef DATA_AGG_H
-#define DATA_AGG_H
+#pragma once
 
 #include <stdio.h>
 #include <string.h>
@@ -25,5 +24,3 @@ typedef struct {
 } Timestamped_Data;
 
 Timestamped_Data dequeue(Queue* q);
-
-#endif // DATA_AGG_H

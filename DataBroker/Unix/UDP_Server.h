@@ -1,5 +1,4 @@
-#ifndef UDP_SERVER_H
-#define UDP_SERVER_H
+#pragma once
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,5 +24,3 @@ void UDP_Stop(void);
 
 // UDP server defines
 #define PORT 8000
-
-#endif // UDP_SERVER_H
