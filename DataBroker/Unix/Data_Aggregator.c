@@ -1,181 +1,125 @@
 #include "Data_Aggregator.h"
+
+#include <stdatomic.h>
+#include <stdio.h>
+#include <pthread.h>
+#include <stdlib.h>
+
 #include "Shm_Interface.h"
 #include "Sem_Stop.h"
 #include "atomicSet.h"
 #include "utils.h"
 
-int STOP = 0;
+static atomic_bool PRODUCER_DONE = false;
+static pthread_mutex_t LOG_LOCK = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t LOG_READY = PTHREAD_COND_INITIALIZER;
+
 DATA UP_DATA_OUT[MAX_IO];
 
-sem_t* semaphore_Write;
-sem_t* semaphore_Done;
-MSG_DATA* init_Values;
+Queue *UP_DATA_QUEUE;
+Queue *PUB_DATA_QUEUE;
 
-Queue* UP_DATA_QUEUE;
-Queue* PUB_DATA_QUEUE;
-
-void* Data_Aggregator(void* arg) {
-    key_t pass_init_key = 10621; // shared memory pass init key
-    UP_DATA_QUEUE = createQueue();
-    PUB_DATA_QUEUE = createQueue();
-
-    int pass_shmid = shmget(pass_init_key, sizeof(MSG_DATA), 0666 | IPC_CREAT);
-    if (pass_shmid == -1) {
-        perror("shmget");
-        Set_Stop();
-        setErrorFlag();
-        clearQueue(UP_DATA_QUEUE);
-        clearQueue(PUB_DATA_QUEUE);
-        return (void*)-1;
-    }
-
-    init_Values = (MSG_DATA*)shmat(pass_shmid, NULL, 0);
-    if (init_Values == (void*)-1) {
-        perror("shmat");
-        Set_Stop();
-        setErrorFlag();
-        clearQueue(UP_DATA_QUEUE);
-        clearQueue(PUB_DATA_QUEUE);
-        return (void*)-1;
-    }
-
-    semaphore_Write = sem_open("/SemaphoreWrite", O_CREAT, 0644, 0);
-    semaphore_Done = sem_open("/SemaphoreDone", O_CREAT, 0644, 0);
-    printf("Semaphores created by Data_Aggregator\n");
-
-    if (semaphore_Write == SEM_FAILED || semaphore_Done == SEM_FAILED) {
-        perror("sem_open");
-        Set_Stop();
-        setErrorFlag();
-        shmdt(init_Values);
-        shmctl(pass_shmid, IPC_RMID, NULL);
-        clearQueue(UP_DATA_QUEUE);
-        clearQueue(PUB_DATA_QUEUE);
-        return (void*)-1;
-    }
-
-    init_Values->PUB = 0;
-    init_Values->UP = 0;
-    init_Values->TimeStep = 0.0;
-    sem_post(semaphore_Write);
-    printf("DA WAITING ON SHM");
-    sem_wait(semaphore_Done);
-
-    int PUB = init_Values->PUB;
-    int UP = init_Values->UP;
-    double TimeStep = init_Values->TimeStep;
-
-    printf("Received from Shm_Interface: PUB = %d, UP = %d, TimeStep = %f\n", init_Values->PUB, init_Values->UP, init_Values->TimeStep);
-
-    shmdt(init_Values);
-    shmctl(pass_shmid, IPC_RMID, NULL);
-    sem_close(semaphore_Done);
-    sem_close(semaphore_Write);
-
-    FILE* up_file = fopen("up_data.csv", "w");
-    if (up_file == NULL) {
-        perror("fopen");
-        clearQueue(UP_DATA_QUEUE);
-        clearQueue(PUB_DATA_QUEUE);
-        setErrorFlag();
-        return (void*)-1;
-    }
-
-    FILE* pub_file = fopen("pub_data.csv", "w");
-    if (pub_file == NULL) {
-        perror("fopen");
-        clearQueue(UP_DATA_QUEUE);
-        clearQueue(PUB_DATA_QUEUE);
-        fclose(up_file);
-        setErrorFlag();
-        return (void*)-1;
-    }
-
-    if (CONF.Realtime_Timestep) {
-        fprintf(up_file, "Name,Value,Time,RealTime\n");
-        fprintf(pub_file, "Name,Value,Time,RealTime\n");
-    }
-    else {
-        fprintf(up_file, "Name,Value,Time\n");
-        fprintf(pub_file, "Name,Value,Time\n");
-    }
-
-    while (1) {
-        if (!isEmpty(PUB_DATA_QUEUE)) {
-            Timestamped_Data new_log = dequeue(PUB_DATA_QUEUE);
-            if (CONF.Realtime_Timestep) {
-                fprintf(pub_file, "%s,%f,%f,%ld\n", new_log.data.Name, new_log.data.Value, new_log.data.Time, new_log.realTime.tv_sec);
-            }
-            else {
-                fprintf(pub_file, "%s,%f,%f\n", new_log.data.Name, new_log.data.Value, new_log.data.Time);
-            }
-        }
-
-        if (!isEmpty(UP_DATA_QUEUE)) {
-            Timestamped_Data new_log = dequeue(UP_DATA_QUEUE);
-            if (CONF.Realtime_Timestep) {
-                fprintf(up_file, "%s,%f,%f,%ld\n", new_log.data.Name, new_log.data.Value, new_log.data.Time, new_log.realTime.tv_sec);
-            }
-            else {
-                fprintf(up_file, "%s,%f,%f\n", new_log.data.Name, new_log.data.Value, new_log.data.Time);
-            }
-        }
-
-        if (checkErrorFlag()) {
-            printf("Error Flag set to True checked");
-            Set_Stop();
-        }
-        STOP = Sem_Stop();
-        if (STOP > 0) {
-            break;
-        }
-    }
-
-    while (!isEmpty(PUB_DATA_QUEUE) || !isEmpty(UP_DATA_QUEUE)) {
-        if (!isEmpty(PUB_DATA_QUEUE)) {
-            Timestamped_Data new_log = dequeue(PUB_DATA_QUEUE);
-            if (CONF.Realtime_Timestep) {
-                fprintf(pub_file, "%s,%f,%f,%ld\n", new_log.data.Name, new_log.data.Value, new_log.data.Time, new_log.realTime.tv_sec);
-            }
-            else {
-                fprintf(pub_file, "%s,%f,%f\n", new_log.data.Name, new_log.data.Value, new_log.data.Time);
-            }
-        }
-
-        if (!isEmpty(UP_DATA_QUEUE)) {
-            Timestamped_Data new_log = dequeue(UP_DATA_QUEUE);
-            if (CONF.Realtime_Timestep) {
-                fprintf(up_file, "%s,%f,%f,%ld\n", new_log.data.Name, new_log.data.Value, new_log.data.Time, new_log.realTime.tv_sec);
-            }
-            else {
-                fprintf(up_file, "%s,%f,%f\n", new_log.data.Name, new_log.data.Value, new_log.data.Time);
-            }
-        }
-    }
-
-    fclose(up_file);
-    fclose(pub_file);
-    printf("Test");
-    sleep(1);
-    return 0;
+static void notify_logger(void)
+{
+    pthread_mutex_lock(&LOG_LOCK);
+    pthread_cond_signal(&LOG_READY);
+    pthread_mutex_unlock(&LOG_LOCK);
 }
 
-Queue* createQueue() {
-    Queue* q = (Queue*)malloc(sizeof(Queue));
+void Finish_Logging(void)
+{
+    pthread_mutex_lock(&LOG_LOCK);
+    atomic_store(&PRODUCER_DONE, true);
+    pthread_cond_signal(&LOG_READY);
+    pthread_mutex_unlock(&LOG_LOCK);
+}
+
+void Cleanup_Logging(void)
+{
+    pthread_cond_destroy(&LOG_READY);
+    pthread_mutex_destroy(&LOG_LOCK);
+}
+
+static void log_queue(FILE *file, Queue *queue)
+{
+    if (isEmpty(queue)) {
+        return;
+    }
+
+    Timestamped_Data log = dequeue(queue);
+    if (CONF.Realtime_Timestep) {
+        fprintf(file, "%s,%f,%f,%ld\n", log.data.Name, log.data.Value,
+                log.data.Time, log.realTime.tv_sec);
+    } else {
+        fprintf(file, "%s,%f,%f\n", log.data.Name, log.data.Value, log.data.Time);
+    }
+}
+
+void *Data_Aggregator(void *_)
+{
+    FILE *up = fopen("up_data.csv", "w");
+    FILE *pub = fopen("pub_data.csv", "w");
+
+    if (!up || !pub) {
+        perror("Opening data logs");
+        if (up) {
+            fclose(up);
+        }
+        if (pub) {
+            fclose(pub);
+        }
+        Set_Stop();
+        return (void *)-1;
+    }
+    const char *header = CONF.Realtime_Timestep ? "Name,Value,Time,RealTime\n"
+                                                : "Name,Value,Time\n";
+    fputs(header, up);
+    fputs(header, pub);
+
+    while (!atomic_load(&PRODUCER_DONE) || !isEmpty(PUB_DATA_QUEUE) ||
+           !isEmpty(UP_DATA_QUEUE)) {
+        log_queue(pub, PUB_DATA_QUEUE);
+        log_queue(up, UP_DATA_QUEUE);
+        if (checkErrorFlag()) {
+            Set_Stop();
+        }
+
+        pthread_mutex_lock(&LOG_LOCK);
+        while (!atomic_load(&PRODUCER_DONE) && isEmpty(PUB_DATA_QUEUE) &&
+               isEmpty(UP_DATA_QUEUE)) {
+            pthread_cond_wait(&LOG_READY, &LOG_LOCK);
+        }
+        pthread_mutex_unlock(&LOG_LOCK);
+    }
+    int failed = fclose(up) != 0;
+    if (fclose(pub) != 0) {
+        failed = 1;
+    }
+    printf("Data Aggregator exited.\n");
+    return failed ? (void *)-1 : NULL;
+}
+
+Queue *createQueue()
+{
+    Queue *q = (Queue *)malloc(sizeof(Queue));
     if (q == NULL) {
-        fprintf(stderr, "Memory allocation failed\n");
-        exit(EXIT_FAILURE);
+        return NULL;
     }
     q->front = q->rear = NULL;
-    pthread_mutex_init(&q->lock, NULL);
+    if (pthread_mutex_init(&q->lock, NULL) != 0) {
+        free(q);
+        return NULL;
+    }
     return q;
 }
 
-void enqueue(Queue* q, DATA value) {
-    Node* newNode = (Node*)malloc(sizeof(Node));
+void enqueue(Queue *q, DATA value)
+{
+    Node *newNode = (Node *)malloc(sizeof(Node));
     if (newNode == NULL) {
-        fprintf(stderr, "Memory allocation failed\n");
-        exit(EXIT_FAILURE);
+        setErrorFlag();
+        Set_Stop();
+        return;
     }
 
     struct timespec ts;
@@ -188,16 +132,17 @@ void enqueue(Queue* q, DATA value) {
 
     if (q->rear == NULL) {
         q->front = q->rear = newNode;
-    }
-    else {
+    } else {
         q->rear->next = newNode;
         q->rear = newNode;
     }
 
     pthread_mutex_unlock(&q->lock);
+    notify_logger();
 }
 
-Timestamped_Data dequeue(Queue* q) {
+Timestamped_Data dequeue(Queue *q)
+{
     pthread_mutex_lock(&q->lock);
 
     Timestamped_Data TSData;
@@ -208,12 +153,17 @@ Timestamped_Data dequeue(Queue* q) {
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
         TSData.realTime = ts;
-        DATA empty_data = { "", 0.0, 0.0 };
+        DATA empty_data = {
+            .Name = "",
+            .Type = "",
+            .Value = 0.0,
+            .Time = 0.0,
+        };
         TSData.data = empty_data;
         return TSData;
     }
 
-    Node* temp = q->front;
+    Node *temp = q->front;
     TSData.realTime = temp->realTime;
     TSData.data = temp->data;
     q->front = q->front->next;
@@ -226,16 +176,22 @@ Timestamped_Data dequeue(Queue* q) {
     return TSData;
 }
 
-int isEmpty(Queue* q) {
+int isEmpty(Queue *q)
+{
     pthread_mutex_lock(&q->lock);
     int empty = (q->front == NULL);
     pthread_mutex_unlock(&q->lock);
     return empty;
 }
 
-void clearQueue(Queue* q) {
-    Node* current = q->front;
-    Node* next;
+void clearQueue(Queue *q)
+{
+    if (!q) {
+        return;
+    }
+
+    Node *current = q->front;
+    Node *next;
 
     while (current != NULL) {
         next = current->next;
@@ -246,5 +202,5 @@ void clearQueue(Queue* q) {
     q->front = NULL;
     q->rear = NULL;
     pthread_mutex_destroy(&q->lock);
-    //free(q); causes a failure on exit
+    free(q);
 }

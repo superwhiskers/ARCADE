@@ -1,73 +1,99 @@
 #include "Sim_Control.h"
-#include "Shm_Interface.h"
+
+#include <poll.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <unistd.h>
+#include <string.h>
+
 #include "Sem_Stop.h"
 #include "init_Server.h"
 #include "utils.h"
 
-void User_Control(void){
-    
-    char invar;
+extern char **environ;
 
-    while(1){
-        printf("***Enter X to stop simulation***\n\n");
-        fflush(stdin);
-        
-        scanf("%c", &invar);
-        
-        if (invar == 'x' || invar == 'X'){
-            printf("Stopping Simulator\n");
+void *Sim_Control(void *_)
+{
+    char *name = SimName();
+    pid_t child = -1;
+    int result = 0;
+    if (!name) {
+        Set_Stop();
+        return (void *)-1;
+    }
+    if (strcmp(name, "Simulink") != 0) {
+        char *args[] = {name, NULL};
+        int rc = posix_spawn(&child, name, NULL, NULL, args, environ);
+        if (rc != 0) {
+            errno = rc;
+            perror("Starting simulator");
+            free(name);
             Set_Stop();
-            sleep(1); /*slow down the kill to let threads close out safely*/
+            return (void *)-1;
+        }
+    } else {
+        printf("External simulator selected. You may now start the simulator.\n");
+    }
+    free(name);
+    printf("***Enter X to stop simulation***\n");
+    while (!Sem_Stop()) {
+        if (child > 0) {
+            int status;
+            pid_t rc = waitpid(child, &status, WNOHANG);
+            if (rc == child || (rc == -1 && errno != EINTR)) {
+                if (rc == -1 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+                    result = -1;
+                child = -1;
+                Set_Stop();
+                break;
+            }
+        }
+        struct pollfd input = {STDIN_FILENO, POLLIN, 0};
+        int rc = poll(&input, 1, 100);
+        if (rc < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            result = -1;
+            Set_Stop();
             break;
         }
-
-    }
-}
-
-/* Notes: Its important not to fork the process if we are not executing the simulator from the DB.
-The relationship between the parent process and child has to change depending on external or internal
-execution of the simulator. This is the simplest and most stable solution. */
-void *Sim_Control(void* _){
-
-    pid_t pid;
-    char *args[2];
-    args[0] = SimName();
-    args[1] = NULL;
-
-    // Setup special flags
-    Special_Flags SHM_FLAGS;
-    pthread_mutex_lock(&FLAG_Mutx);
-    SHM_FLAGS = FLAGS;
-    pthread_mutex_unlock(&FLAG_Mutx);
-    
-    /* checking if Simulink external simulator was selected*/
-    if(!strcmp(args[0],"Simulink")){
-        printf("External simulator selected. \n****You may now start the simulator****\n");
-        User_Control();
-    }
-    else{
-        /* fork process */
-        pid = fork();
-
-        switch(pid){
-            case -1:
-                /* Fork failed*/
-                perror("Fork failed");
+        if (rc > 0 && (input.revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL))) {
+            char buffer[128];
+            ssize_t n = read(STDIN_FILENO, buffer, sizeof(buffer));
+            if (n == 0 || (n < 0 && errno != EINTR && errno != EAGAIN)) {
+                Set_Stop();
                 break;
-            case 0:
-                /* Child process will run the user control */
-                printf("Starting Simulator\n");
-                execv(args[0],args);
-                printf("Simulator has failed to load! \n");
-                break;
-            default:
-                /* Parent starts the user control */
-                printf("User Control Initializing\n");
-                User_Control();
-                break;
+            }
+            for (ssize_t i = 0; i < n; ++i) {
+                if (buffer[i] == 'x' || buffer[i] == 'X') {
+                    Set_Stop();
+                }
+            }
         }
-        kill(pid,SIGTERM);
     }
-
-pthread_exit((void *)0);
+    if (child > 0) {
+        kill(child, SIGTERM);
+        int status;
+        pid_t rc = 0;
+        for (int i = 0; i < 100; ++i) {
+            rc = waitpid(child, &status, WNOHANG);
+            if (rc == child || (rc < 0 && errno != EINTR)) {
+                break;
+            }
+            sleep_ms(10);
+        }
+        if (rc == 0 || (rc < 0 && errno == EINTR)) {
+            kill(child, SIGKILL);
+            RETRY_EINTR(rc, waitpid(child, &status, 0));
+        }
+        if (rc == -1) {
+            result = -1;
+        }
+    }
+    printf("User control exiting.\n");
+    return result ? (void *)-1 : NULL;
 }

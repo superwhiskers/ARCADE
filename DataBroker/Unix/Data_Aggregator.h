@@ -1,26 +1,65 @@
 #pragma once
 
-#include <stdio.h>
-#include <string.h>
-#include <assert.h>
-#include <pthread.h>
-#include <semaphore.h>
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <unistd.h>
-#include "Shm_Interface.h"  // Include to get Queue and DATA definitions
+#include "Shm_Interface.h"
 
 #define MSG_BUFFER 256
 
-void* Data_Aggregator(void* arg);
-void enqueue(Queue* q, DATA value);
-int isEmpty(Queue* q);
-void clearQueue(Queue* q);
-Queue* createQueue();
-
+/// Data with a timestamp attached.
 typedef struct {
+    /// Data enqueued.
     DATA data;
+
+    /// Time the data was acquired at.
     struct timespec realTime;
 } Timestamped_Data;
 
-Timestamped_Data dequeue(Queue* q);
+/// Queue element.
+typedef struct Node {
+    /// Data recorded.
+    DATA data;
+
+    /// Real time at which the data was recorded.
+    struct timespec realTime;
+
+    /// Next element of the queue.
+    struct Node *next;
+} Node;
+
+/// Queue data structure.
+typedef struct Queue {
+    /// Front of the queue.
+    Node *front;
+
+    /// Rear of the queue.
+    Node *rear;
+
+    /// Lock used to control access to the queue.
+    pthread_mutex_t lock;
+} Queue;
+
+/// Start the data aggregation thread.
+void *Data_Aggregator(void *);
+
+/// Enqueue a data object.
+void enqueue(Queue *q, DATA value);
+
+/// Dequeue a data object.
+Timestamped_Data dequeue(Queue *q);
+
+/// Check if the queue is empty.
+int isEmpty(Queue *q);
+
+/// Empty the queue.
+void clearQueue(Queue *q);
+
+/// Initialize a queue.
+Queue *createQueue();
+
+/// Signal the data aggregation thread that data is done being produced.
+void Finish_Logging(void);
+
+/// Clean up after the data aggregation thread.
+void Cleanup_Logging(void);
+
+extern Queue *UP_DATA_QUEUE;
+extern Queue *PUB_DATA_QUEUE;

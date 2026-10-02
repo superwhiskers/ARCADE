@@ -1,94 +1,85 @@
 #include "PLC_Interface.h"
+
+#include <zmq.h>
+#include <stdio.h>
+#include <string.h>
+#include <pthread.h>
+#include <stdlib.h>
+
 #include "Shm_Interface.h"
 #include "Sem_Stop.h"
 #include "utils.h"
 
-void *PLC_Interface(void* _)
+void *PLC_Interface(void *_)
 {
-    //  Socket to talk to clients
-    void *context = zmq_ctx_new ();
-    void *responder = zmq_socket (context, ZMQ_PULL);
-    int timeout = 3000;
-    int rc = zmq_setsockopt(responder, ZMQ_RCVTIMEO, &timeout, sizeof(timeout));
-    assert (rc == 0);
-    rc = zmq_bind (responder, "tcp://*:5555");
-    assert (rc == 0);
-    
-    int n = 0;
-    int STOP = 0;
-    int nbytes;
-    char buffer [MSG_BUFFER];
-    char *reply = "Actuation Signal Recieved";
-    char *name, *value, *saveptr;
-
-    //special flag vars
-    const char *Flag_Tags[4];
-    Flag_Tags[0] = "Hold_Time";
-    Flag_Tags[1] = "Start_Sim";
-    Flag_Tags[2] = "Reset_Sim";
-    Flag_Tags[3] = "End_Sim";
-
-    while (1) {
-        memset(buffer,0,sizeof(MSG_BUFFER));
-        nbytes = zmq_recv (responder, buffer, MSG_BUFFER, 0);
-        
-        if (nbytes != -1) {
-            name = strtok_r(buffer, ":", &saveptr); //NEED to use strtok_r or not thread safe!
-            value = strtok_r(NULL, ":", &saveptr);  //IE if strtok is used in another thread they could collide
-            //printf ("%s\n",value);
-
-            //Special messages
-            for (n = 0; n < 4; n++)
-            {
-                if (strcmp(Flag_Tags[n], name) == 0) {
-                    pthread_mutex_lock(&FLAG_Mutx);
-                    switch (n){
-                        case 0:
-                            FLAGS.Hold_Time_Flag = strtobool(value);
-                            break;
-                        case 1:
-                            FLAGS.Hold_Time_Flag = !strtobool(value);
-                            break;
-                        case 2:
-                            FLAGS.Reset_Sim_Flag = strtobool(value);
-                            break;
-                        case 3:
-                            printf("Stop requested over ZMQ\n");
-                            Set_Stop();
-                            break;
-                    }
-                    pthread_mutex_unlock(&FLAG_Mutx);
-                    break;
-                }
+    int result = 0;
+    void *context = zmq_ctx_new();
+    void *socket = context ? zmq_socket(context, ZMQ_PULL) : NULL;
+    if (!socket || zmq_configure(socket) || zmq_bind(socket, "tcp://*:5555")) {
+        result = -1;
+        goto cleanup;
+    }
+    while (!Sem_Stop()) {
+        char buffer[MSG_BUFFER];
+        int n = zmq_recv(socket, buffer, sizeof(buffer) - 1, 0);
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EINTR) {
+                continue;
             }
-
-            //wait for mutex
-            pthread_mutex_lock(&DATA_Mutx);
-
-            for (n = 0; n < MAX_IO; n++)
-            {
-                if (strcmp(UP_DATA[n].Name, name) == 0) {
-                    UP_DATA[n].Value = strtod(value, NULL);
-                    break;
-                }
-            }
-            //Release mutex
-            pthread_mutex_unlock(&DATA_Mutx);
-            
+            result = -1;
+            break;
         }
 
-        //Check stop semaphore
-		STOP = Sem_Stop();
-		if (STOP > 0)
-		{
-			break;
-		}
+        if ((size_t)n >= sizeof(buffer)) {
+            continue;
+        }
+
+        buffer[n] = '\0';
+
+        char *save;
+        char *name = strtok_r(buffer, ":", &save);
+        char *value = strtok_r(NULL, ":", &save);
+        if (!name || !value) {
+            continue;
+        }
+
+        if (strcmp(name, "End_Sim") == 0) {
+            Set_Stop();
+            break;
+        }
+
+        if (strcmp(name, "Hold_Time") == 0) {
+            pthread_mutex_lock(&FLAG_Mutx);
+            FLAGS.Hold_Time_Flag = strtobool(value);
+            pthread_mutex_unlock(&FLAG_Mutx);
+            continue;
+        } else if (strcmp(name, "Start_Sim") == 0) {
+            pthread_mutex_lock(&FLAG_Mutx);
+            FLAGS.Hold_Time_Flag = !strtobool(value);
+            pthread_mutex_unlock(&FLAG_Mutx);
+            continue;
+        }
+
+        pthread_mutex_lock(&DATA_Mutx);
+        for (int i = 0; i < MAX_IO; ++i) {
+            if (strcmp(UP_DATA[i].Name, name) == 0) {
+                UP_DATA[i].Value = strtod(value, NULL);
+                break;
+            }
+        }
+        pthread_mutex_unlock(&DATA_Mutx);
     }
-    
-zmq_close(responder); 
-zmq_ctx_destroy(context);
-printf("ZMQ Update Server Closed Successfully \n");
-pthread_exit((void *)0);
-
+cleanup:
+    if (result) {
+        perror("PLC interface");
+        Set_Stop();
+    }
+    if (socket) {
+        zmq_close(socket);
+    }
+    if (context) {
+        zmq_ctx_destroy(context);
+    }
+    printf("ZMQ Update Server Closed Successfully\n");
+    return result ? (void *)-1 : NULL;
 }
-

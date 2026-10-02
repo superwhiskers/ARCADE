@@ -1,12 +1,12 @@
 #pragma once
 
-#include <stdio.h>
-#include <stdlib.h>
 #include <stdbool.h>
-#include <stdatomic.h>
 
+/// Set the error flag atomically.
 void setErrorFlag(void);
-bool checkErrorFlag(void);
-void setErrorFlagFalse(void);
 
-extern atomic_flag errAtomicFlag;
+/// Check the error flag atomically.
+bool checkErrorFlag(void);
+
+/// Unset the error flag atomically.
+void setErrorFlagFalse(void);

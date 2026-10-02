@@ -1,37 +1,48 @@
 #include "UDP_Server.h"
 
-void UDP_Server(char *msg) {
-    struct sockaddr_in servaddr;
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
 
-    // Set socket file description
+#include "Sem_Stop.h"
+#include "atomicSet.h"
+
+void UDP_Server(char *msg)
+{
     int sockfd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sockfd <= 0) {
-        perror("Error: Could not open socket");
-        exit(EXIT_FAILURE);
+    if (sockfd < 0) {
+        perror("Could not create a socket");
+        setErrorFlag();
+        Set_Stop();
+        return;
     }
 
-    // Set socket options to enable broadcast
     int broadcastEnable = 1;
-    int ret = setsockopt(sockfd, SOL_SOCKET, SO_BROADCAST, &broadcastEnable, sizeof(broadcastEnable));
+    int ret = setsockopt(sockfd, SOL_SOCKET, SO_BROADCAST, &broadcastEnable,
+                         sizeof(broadcastEnable));
     if (ret) {
-        perror("Error: Could not set socket to broadcast mode");
+        perror("Could not set socket options");
         close(sockfd);
-        exit(EXIT_FAILURE);
+        setErrorFlag();
+        Set_Stop();
+        return;
     }
 
-    memset(&servaddr, 0, sizeof(servaddr));
-
-    // Filling server information
+    struct sockaddr_in servaddr = {0};
     servaddr.sin_family = AF_INET;
     inet_pton(AF_INET, "255.255.255.255", &servaddr.sin_addr);
-    servaddr.sin_port = htons(PORT);
+    servaddr.sin_port = htons(UDP_PORT);
 
-    // Broadcast message
-    sendto(sockfd, msg, strlen(msg), 0, (const struct sockaddr*)&servaddr, sizeof(servaddr));
+    sendto(sockfd, msg, strlen(msg), 0, (const struct sockaddr *)(&servaddr),
+           sizeof(servaddr));
+
     close(sockfd);
 }
 
-void UDP_Stop(void) {
+void UDP_Stop(void)
+{
     char msg[256];
     memset(msg, 0, sizeof(msg));
     sprintf(msg, "STOP\nSTOP\n");

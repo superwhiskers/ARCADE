@@ -1,21 +1,24 @@
-/* Copyright 2024 National Technology & Engineering Solutions of Sandia, LLC (NTESS). 
-Under the terms of Contract DE-NA0003525 with NTESS, the U.S. Government retains 
-certain rights in this software.
+// Copyright 2024 National Technology & Engineering Solutions of Sandia, LLC (NTESS).
+// Under the terms of Contract DE-NA0003525 with NTESS, the U.S. Government retains
+// certain rights in this software.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>
 
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
+#include <pthread.h>
+#include <stdio.h>
+#include <unistd.h>
 
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>. */
-
-#include "DataBroker.h"
 #include "Sem_Interface.h"
 #include "Sem_Stop.h"
 #include "Shm_Interface.h"
@@ -24,72 +27,94 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>. */
 #include "init_Server.h"
 #include "Data_Aggregator.h"
 #include "ZMQ_Client.h"
+#include "atomicSet.h"
+#include "utils.h"
 
-pthread_mutex_t FLAG_Mutx;
-
-Special_Flags FLAGS;
-Configs CONF;
-
-int main()
+int main(void)
 {
-	void *status;
-	pthread_t Sim_Int;
-	pthread_t Sim_Con;
-	pthread_t PLC_Con;
-	pthread_t DA_Thr;
-	pthread_t ZMQ_Thr;
-	Sem_Interface();
-	Init_Stop_Semaphore();
-	printf("Semaphores Initialized\n");
-	
-
-	// Open the Mutexes
+    int result = 0;
+    if (Sem_Interface() != 0) {
+        perror("Initializing semaphores");
+        Cleanup_Interface();
+        return 1;
+    }
+    Init_Stop_Semaphore();
+    if (!stop) {
+        Cleanup_Interface();
+        return 1;
+    }
     if (pthread_mutex_init(&DATA_Mutx, NULL) != 0) {
-        perror("Mutex initialization failed");
-        return -1;
+        Cleanup_Stop_Semaphore();
+        Cleanup_Interface();
+        return 1;
     }
-	if (pthread_mutex_init(&FLAG_Mutx, NULL) != 0) {
-        perror("Mutex initialization failed");
-        return -1;
+    if (pthread_mutex_init(&FLAG_Mutx, NULL) != 0) {
+        pthread_mutex_destroy(&DATA_Mutx);
+        Cleanup_Stop_Semaphore();
+        Cleanup_Interface();
+        return 1;
     }
-	
-	// initialization server start
-	init_Server();
 
-	// Setup special flags
-    Configs CONF_FLAGS;
-    pthread_mutex_lock(&FLAG_Mutx);
-    CONF_FLAGS = CONF;
-    pthread_mutex_unlock(&FLAG_Mutx);
+    UP_DATA_QUEUE = createQueue();
+    PUB_DATA_QUEUE = createQueue();
+    if (!UP_DATA_QUEUE || !PUB_DATA_QUEUE) {
+        result = 1;
+        goto cleanup;
+    }
 
-	// Start threads
-	pthread_create(&Sim_Con, NULL, Sim_Control, (void *)0);
-	pthread_create(&Sim_Int, NULL, Shm_Interface, (void *)0);
-	pthread_create(&PLC_Con, NULL, PLC_Interface, (void *)0);
-	pthread_create(&DA_Thr, NULL, Data_Aggregator, (void *)0);
+    if (init_Server() != 0) {
+        perror("Initializing endpoints");
+        result = 1;
+        goto cleanup;
+    }
 
-	if (CONF_FLAGS.Co_Sim_Enable){
-		printf("Co-Simulation Enabled\n");
-		pthread_create(&ZMQ_Thr, NULL, ZMQ_Client, (void *)0);
-	}
-	else {
-		printf("Co-Simulation Disabled\n");
-	}
+    pthread_t threads[5];
+    void *(*workers[])(void *) = {
+        Sim_Control, Shm_Interface, PLC_Interface, Data_Aggregator, ZMQ_Client};
+    int count = CONF.Co_Sim_Enable ? 5 : 4;
 
-	// Join threads
-	pthread_join(Sim_Con, &status);
-	pthread_join(Sim_Int, &status);
-	pthread_join(PLC_Con, &status);
-	pthread_join(DA_Thr, &status);
-	// Join co-sim thread if started
-	if (CONF_FLAGS.Co_Sim_Enable){
-		pthread_join(ZMQ_Thr, &status);
-	}
-	
-	// Destory mutexes
-	pthread_mutex_destroy(&DATA_Mutx);
-	pthread_mutex_destroy(&FLAG_Mutx);
-	Cleanup_Stop_Semaphore();
+    int started = 0;
+    for (; started < count; ++started) {
+        int rc = pthread_create(&threads[started], NULL, workers[started], NULL);
+        if (rc) {
+            errno = rc;
+            perror("Starting worker");
+            Set_Stop();
+            result = 1;
+            break;
+        }
+    }
 
-	return 0;
+    const int order[] = {0, 1, 2, 4, 3};
+    for (size_t i = 0; i < sizeof(order) / sizeof(order[0]); ++i) {
+        int index = order[i];
+
+        if (index == 3) {
+            Finish_Logging();
+        }
+        if (index >= started) {
+            continue;
+        }
+
+        void *status;
+        int rc = pthread_join(threads[index], &status);
+        if (rc || status != NULL) {
+            result = 1;
+        }
+    }
+
+    if (checkErrorFlag()) {
+        result = 1;
+    }
+
+cleanup:
+    clearQueue(UP_DATA_QUEUE);
+    clearQueue(PUB_DATA_QUEUE);
+    Cleanup_Logging();
+    pthread_mutex_destroy(&DATA_Mutx);
+    pthread_mutex_destroy(&FLAG_Mutx);
+    Cleanup_Stop_Semaphore();
+    Cleanup_Interface();
+    printf("Exiting.\n");
+    return result;
 }

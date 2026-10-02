@@ -1,7 +1,7 @@
 #pragma once
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <semaphore.h>
-#include <fcntl.h>
-void Sem_Interface(void);
+/// Reset semaphores and prepare them to be used.
+int Sem_Interface(void);
+
+/// Clean up semaphores.
+void Cleanup_Interface(void);

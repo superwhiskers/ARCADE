@@ -1,427 +1,224 @@
-#include "UDP_Server.h"
 #include "Shm_Interface.h"
+
+#include <sys/shm.h>
+#include <semaphore.h>
+#include <stdio.h>
+#include <errno.h>
+#include <stdbool.h>
+#include <math.h>
+
+#include "UDP_Server.h"
 #include "Sem_Stop.h"
+#include "Data_Aggregator.h"
 #include "utils.h"
 
 DATA UP_DATA[MAX_IO];
 DATA PUB_DATA[MAX_IO];
-
 MSG_DATA DB_MESSAGE;
 
 pthread_mutex_t DATA_Mutx;
 
-void* Shm_Interface(void* arg)
+void *Shm_Interface(void *_)
 {
-    printf("Starting Shm_Interface\n");
+    sem_t *up = SEM_FAILED, *pub = SEM_FAILED, *msg = SEM_FAILED;
+    sem_t *co_sim = SEM_FAILED, *co_sim_2 = SEM_FAILED;
+    MSG_DATA *metadata = (void *)-1;
+    DATA *published = (void *)-1, *updated = (void *)-1;
+    int result = WAIT_ERROR;
 
-    
+    up = sem_open("/up_sem", 0);
+    pub = sem_open("/pp_sem", 0);
+    msg = sem_open("/msg", 0);
+    co_sim = sem_open("/co_sim", 0);
+    co_sim_2 = sem_open("/co_sim_2", 0);
 
-    // Setup keys for shm
-    key_t msg_key = 10620; // shared memory DB key
-    key_t SHM_PUB = 10618; // shared memory publish key
-    key_t SHM_UP = 10619; // shared memory update key
-    key_t pass_init_key = 10621; // shared memory pass init key
-
-    sem_t* semaphore_Write;
-    sem_t* semaphore_Done;
-
-    // Setup semaphores
-    sem_t* up = sem_open("/up_sem", O_CREAT, 0644, 0);
-    if (up == SEM_FAILED) {
-        perror("Failed to open update semaphore");
-        Set_Stop();
-        UDP_Stop();
-        return (void*)-1;
+    if (up == SEM_FAILED || pub == SEM_FAILED || msg == SEM_FAILED ||
+        co_sim == SEM_FAILED || co_sim_2 == SEM_FAILED) {
+        goto cleanup;
     }
 
-    sem_t* pub = sem_open("/pp_sem", O_CREAT, 0644, 0);
-    if (pub == SEM_FAILED) {
-        perror("Failed to open publish semaphore");
-        Set_Stop();
-        UDP_Stop();
-        return (void*)-1;
+    result = sem_wait_safe(msg, 0);
+    if (result != WAIT_OK) {
+        goto cleanup;
+    }
+    result = WAIT_ERROR;
+
+    int id = shmget(10620, sizeof(MSG_DATA), 0600);
+    if (id < 0) {
+        goto cleanup;
     }
 
-    sem_t* msg_sem = sem_open("/msg", O_CREAT, 0644, 0);
-    if (msg_sem == SEM_FAILED) {
-        perror("Failed to open message semaphore");
-        Set_Stop();
-        UDP_Stop();
-        return (void*)-1;
+    metadata = shmat(id, NULL, 0);
+    if (metadata == (void *)-1) {
+        goto cleanup;
     }
-    
-    sem_t* co_sim = sem_open("/co_sim", O_CREAT, 0644, 0);
-    if (co_sim == SEM_FAILED) {
-        perror("Failed to open co-sim semaphore");
-        Set_Stop();
-        UDP_Stop();
-        return (void*)-1;
+    int n_pub = metadata->PUB, n_up = metadata->UP;
+    double dt = metadata->TimeStep;
+    if (n_pub < 0 || n_pub > MAX_IO || n_up < 0 || n_up > MAX_IO ||
+        !isfinite(dt) || dt < 0) {
+        errno = EINVAL;
+        goto cleanup;
     }
+    if (n_pub) {
+        id = shmget(10618, n_pub * sizeof(DATA), 0600);
+        if (id < 0) {
+            goto cleanup;
+        }
 
-    sem_t* co_sim_2 = sem_open("/co_sim_2", O_CREAT, 0644, 0);
-    if (co_sim_2 == SEM_FAILED) {
-        perror("Failed to open co-sim 2 semaphore");
-        Set_Stop();
-        UDP_Stop();
-        return (void*)-1;
-    }
-
-    printf("waiting for DA *********************\n");
-    int wait_mod = 0;
-    // Semaphore closed by Data_Aggregator upon completion of data exchange
-
-    //special flag timer
-    struct timespec remaining, request = { 0, 1000000 };
-
-    // Attempt to open the semaphore until it exists
-    while (1) {
-        semaphore_Write = sem_open("/SemaphoreWrite", 0);
-        if (semaphore_Write != SEM_FAILED) {
-            break;
-        } else {
-            if (errno == ENOENT) {
-                if (wait_mod % 100 == 0) {
-                    printf("Waiting for DA semaphores to be created\n");
-                }
-                // Check stop semaphore
-                int STOP = Sem_Stop();
-                if (STOP > 0) {
-                    printf("Stop condition detected, exiting loop\n");
-                    return (void*)-1;
-                }
-                wait_mod += 1;
-                usleep(10000); // Sleep for 10ms to avoid busy waiting
-            } else {
-                perror("sem_open failed");
-                return (void*)-1;
-            }
+        published = shmat(id, NULL, 0);
+        if (published == (void *)-1) {
+            goto cleanup;
         }
     }
-    printf("Done waiting for DA\n");
-
-    // Open the Mutex
-    if (pthread_mutex_init(&DATA_Mutx, NULL) != 0) {
-        perror("Mutex initialization failed");
-        return (void*)-1;
-    }
-
-    // Gather number of update and publish points from simulink
-    // And get timestep size
-    printf("Wait for Semaphore\n");
-    //printf("Hello");
-    int STOP;
-    int i;
-    while (1) {
-        printf("Entering loop\n");
-        if (sem_wait(msg_sem) == 0) {
-            printf("Semaphore captured\n");
-            break;
-        } else {
-            perror("Semaphore wait failed");
-            // Check stop semaphore
-            STOP = Sem_Stop();
-            if (STOP > 0) {
-                break;
-            }
+    if (n_up) {
+        id = shmget(10619, n_up * sizeof(DATA), 0600);
+        if (id < 0) {
+            goto cleanup;
         }
-        printf("Still waiting for Simulink\n");
+
+        updated = shmat(id, NULL, 0);
+        if (updated == (void *)-1) {
+            goto cleanup;
+        }
     }
 
-    printf("Semaphore captured\n");
-    int N_UP, N_PUB;
-    double DT;
-    int shmdb = shmget(msg_key, sizeof(MSG_DATA), 0600 | IPC_CREAT);
-    if (shmdb == -1) {
-        perror("Failed to open Init mapping file");
-        Set_Stop();
-        UDP_Stop();
-        return (void*)-1;
+    pthread_mutex_lock(&DATA_Mutx);
+    for (int i = 0; i < n_pub; ++i) {
+        PUB_DATA[i] = published[i];
+        PUB_DATA[i].Name[sizeof(PUB_DATA[i].Name) - 1] = '\0';
+        PUB_DATA[i].Type[sizeof(PUB_DATA[i].Type) - 1] = '\0';
+        enqueue(PUB_DATA_QUEUE, PUB_DATA[i]);
     }
-
-    MSG_DATA* MSG_DB = (MSG_DATA*) shmat(shmdb, NULL, 0);
-    if (MSG_DB == (void*) -1) {
-        perror("Failed to attach MSG_DB shared memory");
-        Set_Stop();
-        UDP_Stop();
-        return (void*)-1;
-    } else {
-        // Extract values from initialization SHM
-        N_UP = MSG_DB->UP; // Number update points
-        N_PUB = MSG_DB->PUB; // Number publish points
-        DT = MSG_DB->TimeStep; // Timestep size
-
-        // Detach shared memory
-        shmdt(MSG_DB);
-
-        printf("Update Points: %i\nPublish Points: %i\nTimestep Size %f\n", N_UP, N_PUB, DT);
+    for (int i = 0; i < n_up; ++i) {
+        UP_DATA[i] = updated[i];
+        UP_DATA[i].Name[sizeof(UP_DATA[i].Name) - 1] = '\0';
+        UP_DATA[i].Type[sizeof(UP_DATA[i].Type) - 1] = '\0';
+        enqueue(UP_DATA_QUEUE, UP_DATA[i]);
     }
+    pthread_mutex_unlock(&DATA_Mutx);
 
-    // Signal that read is done
-    sem_post(msg_sem);
-
-    // Setup special flags
-    Special_Flags SHM_FLAGS;
-    Configs CONF_FLAGS;
     pthread_mutex_lock(&FLAG_Mutx);
-    SHM_FLAGS = FLAGS;
-    CONF.PUB_N = N_PUB;
-    CONF.UP_N = N_UP;
-    CONF.TimeStep = DT;
+    CONF.PUB_N = n_pub;
+    CONF.UP_N = n_up;
+    CONF.TimeStep = dt;
     CONF.config_captured = true;
-
-    CONF_FLAGS = CONF;
+    Configs config = CONF;
     pthread_mutex_unlock(&FLAG_Mutx);
-    
-    // Determine if co-sim is blocking for sync
 
-    bool co_sim_blocking = false;
-    if (CONF_FLAGS.Co_Sim_Enable && CONF_FLAGS.Co_Sim_Sync_Enable){
-        co_sim_blocking = true;
-    }
-
-
-    // Wait for Data_Aggregator to setup shared memory for Shm_Interface
-    while (1) {
-        if (sem_wait(semaphore_Write) == 0) {
-            printf("DA Semaphore captured\n");
-            break;
-        } else {
-            perror("DA Semaphore wait failed");
-            // Check stop semaphore
-            STOP = Sem_Stop();
-            if (STOP > 0) {
-                break;
-            }
-        }
-    }
-
-    int pass_shmid = shmget(pass_init_key, sizeof(MSG_DATA), 0600 | IPC_CREAT);
-    if (pass_shmid == -1) {
-        perror("Failed to open mapping file to pass init values");
-        Set_Stop();
-        return (void*)-1;
-    }
-
-    MSG_DATA* init_Values = (MSG_DATA*) shmat(pass_shmid, NULL, 0);
-    if (init_Values == (void*) -1) {
-        perror("Failed to attach shared memory to pass Init Values");
-        Set_Stop();
-        return (void*)-1;
-    } else {
-        // Send values from initialization SHM
-        init_Values->UP = N_UP;
-        init_Values->PUB = N_PUB;
-        init_Values->TimeStep = DT;
-        printf("Init data written to shared memory\n");
-
-        // Initialize semaphore_Done
-        semaphore_Done = sem_open("/SemaphoreDone", O_CREAT, 0644, 0);
-        if (semaphore_Done == SEM_FAILED) {
-            perror("Failed to open done semaphore");
-            Set_Stop();
-            shmdt(init_Values);
-            return (void*)-1;
-        }
-
-        // Allow Data_Aggregator to continue
-        sem_post(semaphore_Done);
-        shmdt(init_Values);
-    }
-
-    usleep(500000);
-
-    while (1) {
-        if (sem_wait(msg_sem) == 0) {
-            printf("Semaphore captured\n");
-            break;
-        } else {
-            perror("Semaphore wait failed");
-            // Check stop semaphore
-            STOP = Sem_Stop();
-            if (STOP > 0) {
-                break;
-            }
-        }
-    }
-
-    // Setup the shared memory locations
-    int shmidpub = shmget(SHM_PUB, N_PUB * sizeof(DATA), 0600 | IPC_CREAT);
-    int shmidup = shmget(SHM_UP, N_UP * sizeof(DATA), 0600 | IPC_CREAT);
-    if (shmidpub == -1 || shmidup == -1) {
-        perror("Failed to open SHM mapping files");
-        Set_Stop();
-        UDP_Stop();
-        return (void*)-1;
-    }
-
-    DATA* PUB_DB = (DATA*) shmat(shmidpub, NULL, 0);
-    DATA* UP_DB = (DATA*) shmat(shmidup, NULL, 0);
-    if (PUB_DB == (void*) -1 || UP_DB == (void*) -1) {
-        perror("Failed to attach DB shared memory");
-        Set_Stop();
-        UDP_Stop();
-        return (void*)-1;
-    } else {
-        pthread_mutex_lock(&DATA_Mutx);
-
-        int n;
-        for (n = 0; n < N_PUB; n++) {
-            PUB_DATA[n] = PUB_DB[n];
-            enqueue(PUB_DATA_QUEUE, PUB_DB[n]);
-        }
-        for (n = 0; n < N_UP; n++) {
-            UP_DATA[n] = UP_DB[n];
-            enqueue(UP_DATA_QUEUE, UP_DB[n]);
-        }
-
-        for (n = 0; n < N_PUB; n++) {
-            printf("%s %s %f %f sec \n", PUB_DATA[n].Name, PUB_DATA[n].Type, PUB_DATA[n].Value, PUB_DATA[n].Time);
-        }
-        for (n = 0; n < N_UP; n++) {
-            printf("%s %s %f %f sec \n", UP_DATA[n].Name, UP_DATA[n].Type, UP_DATA[n].Value, UP_DATA[n].Time);
-        }
-        
-        pthread_mutex_unlock(&DATA_Mutx);
-    }
-
-    // initalize the cosim system if its enabled
-    if (co_sim_blocking){
-        // signal to co-sim thread
+    bool sync = config.Co_Sim_Enable && config.Co_Sim_Sync_Enable;
+    if (config.Co_Sim_Enable) {
         sem_post(co_sim);
-
-        sem_wait_safe(co_sim_2, 0);
+        if (sync && (result = sem_wait_safe(co_sim_2, 0)) != WAIT_OK) {
+            goto cleanup;
+        }
     }
-
-    // Begin the data exchange loop
-    int wait_count = 0;
-    int wait_limit = 5;
-    char msg[256 * 100];
-    int n;
-
-    // Timing vars
-    struct timespec StartingTime, EndingTime;
-    double T_INTERVAL = 0;
-    clock_gettime(CLOCK_MONOTONIC, &StartingTime);
-
-    // Start with a semaphore triggered
     sem_post(up);
 
-    while (1) {
-        // Check the stop semaphore
-        STOP = Sem_Stop();
-        if (STOP > 0) {
-            break;
+    char message[MAX_IO * 256];
+    size_t used;
+
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    while (!Sem_Stop()) {
+        result = sem_wait_safe(pub, 5);
+        if (result != WAIT_OK) {
+            goto cleanup;
         }
 
-        // Safely wait for the semaphore
-        while (1) {
-            if (wait_count > wait_limit) {
-                Set_Stop();
-                UDP_Stop();
-                printf("Semaphore wait time exceeded, exit due to stall...\n");
-                break;
-            }
-            if (sem_wait(pub) == 0) {
-                wait_count = 0;
-                break;
-            } else {
-                perror("Semaphore wait failed");
-                ++wait_count;
-                // Check stop semaphore
-                STOP = Sem_Stop();
-                if (STOP > 0) {
-                    break;
-                }
-            }
-        }
+        used = 0;
+        message[0] = '\0';
 
-        // Capture mutex
         pthread_mutex_lock(&DATA_Mutx);
-
-        // Capture updates
-        memset(msg, 0, sizeof(msg));
-        for (n = 0; n < N_PUB; n++) {
-            PUB_DATA[n] = PUB_DB[n];
-            if (n == 0) {
-                sprintf(msg, "%s %s %f %f sec \n", PUB_DATA[n].Name, PUB_DATA[n].Type, PUB_DATA[n].Value, PUB_DATA[n].Time);
-            } else {
-                sprintf(msg + strlen(msg), "%s %s %f %f sec \n", PUB_DATA[n].Name, PUB_DATA[n].Type, PUB_DATA[n].Value, PUB_DATA[n].Time);
+        for (int i = 0; i < n_pub; ++i) {
+            PUB_DATA[i] = published[i];
+            PUB_DATA[i].Name[sizeof(PUB_DATA[i].Name) - 1] = '\0';
+            PUB_DATA[i].Type[sizeof(PUB_DATA[i].Type) - 1] = '\0';
+            enqueue(PUB_DATA_QUEUE, PUB_DATA[i]);
+            int n = snprintf(message + used, sizeof(message) - used,
+                             "%s %s %f %f sec \n", PUB_DATA[i].Name,
+                             PUB_DATA[i].Type, PUB_DATA[i].Value, PUB_DATA[i].Time);
+            if (n > 0) {
+                size_t available = sizeof(message) - used;
+                used += (size_t)n < available ? (size_t)n : available - 1;
             }
-            enqueue(PUB_DATA_QUEUE, PUB_DB[n]);
-            printf("%s %s %f %f sec \n", PUB_DATA[n].Name, PUB_DATA[n].Type, PUB_DATA[n].Value, PUB_DATA[n].Time);
         }
-        
-        // co-simulation waiting system
-        if (co_sim_blocking){
-        
-            // Release Mutex
-            pthread_mutex_unlock(&DATA_Mutx);
-
-            // signal to co-sim thread
-            sem_post(co_sim);
-
-            sem_wait_safe(co_sim_2, 0);
-            
-            // Capture mutex
-            pthread_mutex_lock(&DATA_Mutx);
-        }
-
-        // push updates to simulator
-        for (n = 0; n < N_UP; n++) {
-            UP_DB[n] = UP_DATA[n];
-            enqueue(UP_DATA_QUEUE, UP_DB[n]);
-            printf("%s %s %f %f sec \n", UP_DATA[n].Name, UP_DATA[n].Type, UP_DATA[n].Value, UP_DATA[n].Time);
-        }
-
         pthread_mutex_unlock(&DATA_Mutx);
 
-        // Message out escape key
-        printf("\n***Press X then Enter to stop simulation***\n");
-
-        // Broadcast the publish points
-        UDP_Server(msg);
-
-        // Time control
-        while (T_INTERVAL < DT) {
-            clock_gettime(CLOCK_MONOTONIC, &EndingTime);
-            T_INTERVAL = (EndingTime.tv_sec - StartingTime.tv_sec) + (EndingTime.tv_nsec - StartingTime.tv_nsec) / 1e9;
-        }
-        clock_gettime(CLOCK_MONOTONIC, &StartingTime);
-        T_INTERVAL = 0;
-
-        // Hold time system
-        pthread_mutex_lock(&FLAG_Mutx);
-        SHM_FLAGS = FLAGS;
-        pthread_mutex_unlock(&FLAG_Mutx);
-        if (SHM_FLAGS.Hold_Time_Flag){
-            while (SHM_FLAGS.Hold_Time_Flag){
-                pthread_mutex_lock(&FLAG_Mutx);
-                SHM_FLAGS = FLAGS;
-                pthread_mutex_unlock(&FLAG_Mutx);
-
-                if (nanosleep(&request, &remaining) == -1){
-                    printf("nanosleep failure\n");
-                }
-
-                STOP = Sem_Stop();
-                if (STOP > 0) {
-                    break;
-                }
+        if (config.Co_Sim_Enable) {
+            sem_post(co_sim);
+            if (sync && (result = sem_wait_safe(co_sim_2, 0)) != WAIT_OK) {
+                goto cleanup;
             }
         }
 
-        sem_post(up);
+        pthread_mutex_lock(&DATA_Mutx);
+        for (int i = 0; i < n_up; ++i) {
+            updated[i] = UP_DATA[i];
+            enqueue(UP_DATA_QUEUE, updated[i]);
+        }
+        pthread_mutex_unlock(&DATA_Mutx);
+
+        UDP_Server(message);
+        while (!Sem_Stop()) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            double elapsed = now.tv_sec - start.tv_sec + (now.tv_nsec - start.tv_nsec) / 1e9;
+            if (elapsed >= dt) {
+                break;
+            }
+            sleep_ms(1);
+        }
+        clock_gettime(CLOCK_MONOTONIC, &start);
+        while (!Sem_Stop()) {
+            pthread_mutex_lock(&FLAG_Mutx);
+            bool hold = FLAGS.Hold_Time_Flag;
+            pthread_mutex_unlock(&FLAG_Mutx);
+
+            if (!hold) {
+                break;
+            }
+
+            sleep_ms(10);
+        }
+        if (!Sem_Stop()) {
+            sem_post(up);
+        }
+    }
+    result = WAIT_STOPPED;
+
+cleanup:
+    if (result == WAIT_ERROR) {
+        perror("Shared memory interface");
     }
 
     Set_Stop();
+
+    if (up != SEM_FAILED) {
+        sem_post(up);
+    }
+
     UDP_Stop();
 
-    shmdt(PUB_DB);
-    shmdt(UP_DB);
-    shmctl(shmidpub, IPC_RMID, NULL);
-    shmctl(shmidup, IPC_RMID, NULL);
-    clearQueue(UP_DATA_QUEUE);
-    clearQueue(PUB_DATA_QUEUE);
-    
-    return 0;
+    if (metadata != (void *)-1) {
+        shmdt(metadata);
+    }
+
+    if (published != (void *)-1) {
+        shmdt(published);
+    }
+
+    if (updated != (void *)-1) {
+        shmdt(updated);
+    }
+
+    sem_t *handles[] = {up, pub, msg, co_sim, co_sim_2};
+    for (size_t i = 0; i < sizeof(handles) / sizeof(handles[0]); ++i) {
+        if (handles[i] != SEM_FAILED) {
+            sem_close(handles[i]);
+        }
+    }
+
+    printf("Shared memory interface exited.\n");
+
+    return result == WAIT_ERROR ? (void *)-1 : NULL;
 }

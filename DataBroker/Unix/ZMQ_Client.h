@@ -1,29 +1,16 @@
 #pragma once
 
-#include <pthread.h>
-#include <stdbool.h>
-#include <zmq.h>
-#include "cJSON.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+/// Maximum number of outputs.
+#define MAX_ZMQ_VARS 512
 
-// Shared sync flags and condition
-extern bool ZMQ_SEND_TRIGGERED;      // Set by Shm_Interface
-extern bool ZMQ_RESPONSE_READY;      // Set by ZMQ_Client
-extern pthread_mutex_t ZMQ_LOCK;
-extern pthread_cond_t ZMQ_COND;
-
+/// Mapping of string names to output indices.
 typedef struct {
-    char tag[64];
+    /// Name of output.
+    char tag[65];
+
+    /// Index of output inside the `PUB_DATA` structure.
     int index;
 } ZMQ_TagMap;
 
-#define MAX_ZMQ_VARS 512
-#define ZMQ_BUFFER 1024
-
-extern ZMQ_TagMap ZMQ_Inputs[MAX_ZMQ_VARS];
-extern ZMQ_TagMap ZMQ_Outputs[MAX_ZMQ_VARS];
-
-void* ZMQ_Client(void* args);
-void CoSim_init();
+/// Function to run the ZeroMQ thread.
+void *ZMQ_Client(void *);

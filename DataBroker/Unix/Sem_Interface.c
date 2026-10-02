@@ -1,57 +1,49 @@
 #include "Sem_Interface.h"
-#include <errno.h>
 
-// Helper function to drain a semaphore to 0 (works on both Linux and macOS)
-static void drain_semaphore(sem_t *sem) {
-    if (sem == SEM_FAILED || sem == NULL) return;
-    
-    // Try to decrement until we can't anymore (semaphore is at 0)
-    // sem_trywait returns 0 on success, -1 with EAGAIN when sem is 0
-    while (sem_trywait(sem) == 0) {
-        // Successfully decremented, keep going
+#include <errno.h>
+#include <sys/shm.h>
+#include <stdlib.h>
+#include <semaphore.h>
+#include <fcntl.h>
+
+static const char *names[] = {
+    "/pp_sem", "/up_sem", "/stop", "/msg", "/co_sim", "/co_sim_2",
+    "/SemaphoreWrite", "/SemaphoreDone"};
+
+int Sem_Interface(void)
+{
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+        sem_t *sem = sem_open(names[i], O_CREAT, 0644, 0);
+        if (sem == SEM_FAILED) {
+            return -1;
+        }
+
+        int rc;
+        do {
+            rc = sem_trywait(sem);
+        } while (rc == 0 || errno == EINTR);
+        int saved = errno;
+
+        sem_close(sem);
+        if (saved != EAGAIN) {
+            errno = saved;
+            return -1;
+        }
     }
-    // When we get here, semaphore is at 0 (or error)
+    return 0;
 }
 
-//setup semaphores and bring them to 0
-void Sem_Interface(void)
+void Cleanup_Interface(void)
 {
- sem_t *up;
- sem_t *pub;
- sem_t *stop;
- sem_t *msg_sem;
- sem_t *co_sim;
- sem_t *co_sim_2;
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+        sem_unlink(names[i]);
+    }
 
- // Open or create semaphores
- pub = sem_open("/pp_sem", O_CREAT, 0644, 0);
- up = sem_open("/up_sem", O_CREAT, 0644, 0);
- stop = sem_open("/stop", O_CREAT, 0644, 0);
- msg_sem = sem_open("/msg", O_CREAT, 0644, 0);
- co_sim = sem_open("/co_sim", O_CREAT, 0644, 0);
- co_sim_2 = sem_open("/co_sim_2", O_CREAT, 0644, 0);
-
- // Check for errors
- if (pub == SEM_FAILED) perror("sem_open /pp_sem failed");
- if (up == SEM_FAILED) perror("sem_open /up_sem failed");
- if (stop == SEM_FAILED) perror("sem_open /stop failed");
- if (msg_sem == SEM_FAILED) perror("sem_open /msg failed");
- if (co_sim == SEM_FAILED) perror("sem_open /co_sim failed");
- if (co_sim_2 == SEM_FAILED) perror("sem_open /co_sim_2 failed");
-
- // Drain all semaphores to 0 (works on both Linux and macOS)
- drain_semaphore(pub);
- drain_semaphore(up);
- drain_semaphore(stop);
- drain_semaphore(msg_sem);
- drain_semaphore(co_sim);
- drain_semaphore(co_sim_2);
-
- // Close handles - persistent opens are managed by each module
- sem_close(pub);
- sem_close(up);
- sem_close(stop);
- sem_close(msg_sem);
- sem_close(co_sim);
- sem_close(co_sim_2);
+    const key_t keys[] = {10618, 10619, 10620, 10621};
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i) {
+        int id = shmget(keys[i], 1, 0600);
+        if (id >= 0) {
+            shmctl(id, IPC_RMID, NULL);
+        }
+    }
 }
