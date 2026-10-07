@@ -1,13 +1,13 @@
 #include "Sim_Control.h"
 
+#include <errno.h>
 #include <poll.h>
 #include <spawn.h>
-#include <sys/wait.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <errno.h>
-#include <unistd.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "Sem_Stop.h"
 #include "init_Server.h"
@@ -24,6 +24,13 @@ void *Sim_Control(void *_)
         Set_Stop();
         return (void *)-1;
     }
+    if (Sem_Stop()) {
+        free(name);
+        return NULL;
+    }
+
+    //TODO: this seems like a bit of a hack. it may be better to add a
+    //      configuration option
     if (strcmp(name, "Simulink") != 0) {
         char *args[] = {name, NULL};
         int rc = posix_spawn(&child, name, NULL, NULL, args, environ);
@@ -38,6 +45,7 @@ void *Sim_Control(void *_)
         printf("External simulator selected. You may now start the simulator.\n");
     }
     free(name);
+    bool terminal = true;
     printf("***Enter X to stop simulation***\n");
     while (!Sem_Stop()) {
         if (child > 0) {
@@ -50,6 +58,10 @@ void *Sim_Control(void *_)
                 Set_Stop();
                 break;
             }
+        }
+        if (!terminal) {
+            sleep_ms(100);
+            continue;
         }
         struct pollfd input = {STDIN_FILENO, POLLIN, 0};
         int rc = poll(&input, 1, 100);
@@ -65,8 +77,8 @@ void *Sim_Control(void *_)
             char buffer[128];
             ssize_t n = read(STDIN_FILENO, buffer, sizeof(buffer));
             if (n == 0 || (n < 0 && errno != EINTR && errno != EAGAIN)) {
-                Set_Stop();
-                break;
+                terminal = false;
+                continue;
             }
             for (ssize_t i = 0; i < n; ++i) {
                 if (buffer[i] == 'x' || buffer[i] == 'X') {
@@ -76,7 +88,6 @@ void *Sim_Control(void *_)
         }
     }
     if (child > 0) {
-        kill(child, SIGTERM);
         int status;
         pid_t rc = 0;
         for (int i = 0; i < 100; ++i) {
@@ -85,6 +96,16 @@ void *Sim_Control(void *_)
                 break;
             }
             sleep_ms(10);
+        }
+        if (rc == 0 || (rc < 0 && errno == EINTR)) {
+            kill(child, SIGTERM);
+            for (int i = 0; i < 100; ++i) {
+                rc = waitpid(child, &status, WNOHANG);
+                if (rc == child || (rc < 0 && errno != EINTR)) {
+                    break;
+                }
+                sleep_ms(10);
+            }
         }
         if (rc == 0 || (rc < 0 && errno == EINTR)) {
             kill(child, SIGKILL);

@@ -3,7 +3,13 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-/// Load and initialize the configuration.
+/// Load the configuration. Returns zero on success or -1 on error.
+int Load_Config(void);
+
+/// Clean up the configuration after workers have exited.
+void Cleanup_Config(void);
+
+/// Initialize endpoints. Returns zero on success or -1 on error.
 int init_Server(void);
 
 /// Helper for opening a file and memory-mapping it.
@@ -12,7 +18,8 @@ int init_Server(void);
 /// in `len`.
 ///
 /// The caller is responsible for calling `munmap(2)` to deallocate the memory
-/// used for the file.
+/// used for the file. Returns NULL on failure with `errno` set. `len` is then
+/// zero.
 char *OpenFile(const char *filename, size_t *len);
 
 /// Get the executable of the simulator from the configuration.
@@ -21,7 +28,10 @@ char *OpenFile(const char *filename, size_t *len);
 char *SimName(void);
 
 /// Read a flag from the configuration.
-bool Read_flags(char *category, char *flagname, bool fallback);
+bool Read_flags(const char *category, const char *flagname, bool fallback);
 
 /// Read a variable from the configuration.
-char *Read_Vars(char *category, char *varname, char *fallback);
+///
+/// Returned strings are owned by the caller and must be freed.
+/// Returns NULL on error or if no value or fallback is available.
+char *Read_Vars(const char *category, const char *varname, const char *fallback);

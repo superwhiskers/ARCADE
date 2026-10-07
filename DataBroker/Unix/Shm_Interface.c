@@ -11,10 +11,13 @@
 #include "Sem_Stop.h"
 #include "Data_Aggregator.h"
 #include "utils.h"
+#include "ZMQ_Client.h"
 
 DATA UP_DATA[MAX_IO];
 DATA PUB_DATA[MAX_IO];
 MSG_DATA DB_MESSAGE;
+bool CO_SIM_OWNED[MAX_IO];
+double PUB_TIME;
 
 pthread_mutex_t DATA_Mutx;
 
@@ -89,6 +92,7 @@ void *Shm_Interface(void *_)
         PUB_DATA[i].Type[sizeof(PUB_DATA[i].Type) - 1] = '\0';
         enqueue(PUB_DATA_QUEUE, PUB_DATA[i]);
     }
+    PUB_TIME = n_pub ? PUB_DATA[0].Time : 0;
     for (int i = 0; i < n_up; ++i) {
         UP_DATA[i] = updated[i];
         UP_DATA[i].Name[sizeof(UP_DATA[i].Name) - 1] = '\0';
@@ -101,11 +105,19 @@ void *Shm_Interface(void *_)
     CONF.PUB_N = n_pub;
     CONF.UP_N = n_up;
     CONF.TimeStep = dt;
-    CONF.config_captured = true;
     Configs config = CONF;
     pthread_mutex_unlock(&FLAG_Mutx);
 
     bool sync = config.Co_Sim_Enable && config.Co_Sim_Sync_Enable;
+    if (config.Co_Sim_Enable) {
+        if (CoSim_ReserveInputs(n_up)) {
+            result = WAIT_ERROR;
+            goto cleanup;
+        }
+    }
+    pthread_mutex_lock(&FLAG_Mutx);
+    CONF.config_captured = true;
+    pthread_mutex_unlock(&FLAG_Mutx);
     if (config.Co_Sim_Enable) {
         sem_post(co_sim);
         if (sync && (result = sem_wait_safe(co_sim_2, 0)) != WAIT_OK) {
@@ -114,13 +126,13 @@ void *Shm_Interface(void *_)
     }
     sem_post(up);
 
-    char message[MAX_IO * 256];
+    char message[UDP_MAX_PAYLOAD + 1];
     size_t used;
 
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC, &start);
     while (!Sem_Stop()) {
-        result = sem_wait_safe(pub, 5);
+        result = sem_wait_safe(pub, config.Publish_Timeout);
         if (result != WAIT_OK) {
             goto cleanup;
         }
@@ -128,21 +140,34 @@ void *Shm_Interface(void *_)
         used = 0;
         message[0] = '\0';
 
+        bool valid = true;
         pthread_mutex_lock(&DATA_Mutx);
         for (int i = 0; i < n_pub; ++i) {
             PUB_DATA[i] = published[i];
             PUB_DATA[i].Name[sizeof(PUB_DATA[i].Name) - 1] = '\0';
             PUB_DATA[i].Type[sizeof(PUB_DATA[i].Type) - 1] = '\0';
+            if (!isfinite(PUB_DATA[i].Value) || !isfinite(PUB_DATA[i].Time)) {
+                valid = false;
+                errno = EDOM;
+                break;
+            }
             enqueue(PUB_DATA_QUEUE, PUB_DATA[i]);
             int n = snprintf(message + used, sizeof(message) - used,
                              "%s %s %f %f sec \n", PUB_DATA[i].Name,
                              PUB_DATA[i].Type, PUB_DATA[i].Value, PUB_DATA[i].Time);
-            if (n > 0) {
-                size_t available = sizeof(message) - used;
-                used += (size_t)n < available ? (size_t)n : available - 1;
+            if (n < 0 || (size_t)n >= sizeof(message) - used) {
+                valid = false;
+                errno = EMSGSIZE;
+                break;
             }
+            used += (size_t)n;
         }
+        PUB_TIME = n_pub ? PUB_DATA[0].Time : PUB_TIME;
         pthread_mutex_unlock(&DATA_Mutx);
+        if (!valid) {
+            result = WAIT_ERROR;
+            goto cleanup;
+        }
 
         if (config.Co_Sim_Enable) {
             sem_post(co_sim);
@@ -158,7 +183,10 @@ void *Shm_Interface(void *_)
         }
         pthread_mutex_unlock(&DATA_Mutx);
 
-        UDP_Server(message);
+        if (used && UDP_Server(message)) {
+            result = WAIT_ERROR;
+            goto cleanup;
+        }
         while (!Sem_Stop()) {
             struct timespec now;
             clock_gettime(CLOCK_MONOTONIC, &now);

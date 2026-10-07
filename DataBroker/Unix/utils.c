@@ -33,9 +33,8 @@ static double elapsed(struct timespec start)
     return now.tv_sec - start.tv_sec + (now.tv_nsec - start.tv_nsec) / 1e9;
 }
 
-int sem_wait_safe(void *arg, int wait_limit)
+int sem_wait_safe(sem_t *sem, int wait_limit)
 {
-    sem_t *sem = arg;
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC, &start);
     for (;;) {
@@ -59,12 +58,15 @@ int sem_wait_safe(void *arg, int wait_limit)
 int zmq_configure(void *socket)
 {
     int timeout = 100, linger = 0;
-    return zmq_setsockopt(socket, ZMQ_RCVTIMEO, &timeout, sizeof(timeout)) ||
-           zmq_setsockopt(socket, ZMQ_SNDTIMEO, &timeout, sizeof(timeout)) ||
-           zmq_setsockopt(socket, ZMQ_LINGER, &linger, sizeof(linger));
+    if (zmq_setsockopt(socket, ZMQ_RCVTIMEO, &timeout, sizeof(timeout)) ||
+        zmq_setsockopt(socket, ZMQ_SNDTIMEO, &timeout, sizeof(timeout)) ||
+        zmq_setsockopt(socket, ZMQ_LINGER, &linger, sizeof(linger))) {
+        return -1;
+    }
+    return 0;
 }
 
-int zmq_exchange(void *socket, const char *request, zmq_msg_t *reply)
+int zmq_exchange(void *socket, const char *request, zmq_msg_t *reply, int timeout)
 {
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC, &start);
@@ -83,7 +85,7 @@ int zmq_exchange(void *socket, const char *request, zmq_msg_t *reply)
         } else if (errno != EAGAIN && errno != EINTR) {
             return WAIT_ERROR;
         }
-        if (elapsed(start) >= 5) {
+        if (timeout > 0 && elapsed(start) >= timeout) {
             errno = ETIMEDOUT;
             return WAIT_ERROR;
         }

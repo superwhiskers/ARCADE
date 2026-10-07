@@ -33,25 +33,33 @@
 int main(void)
 {
     int result = 0;
+    if (Init_Stop_Signals() || Lock_Interface()) {
+        perror("Acquiring broker ownership");
+        return 1;
+    }
     if (Sem_Interface() != 0) {
         perror("Initializing semaphores");
         Cleanup_Interface();
+        Unlock_Interface();
         return 1;
     }
     Init_Stop_Semaphore();
     if (!stop) {
         Cleanup_Interface();
+        Unlock_Interface();
         return 1;
     }
     if (pthread_mutex_init(&DATA_Mutx, NULL) != 0) {
         Cleanup_Stop_Semaphore();
         Cleanup_Interface();
+        Unlock_Interface();
         return 1;
     }
     if (pthread_mutex_init(&FLAG_Mutx, NULL) != 0) {
         pthread_mutex_destroy(&DATA_Mutx);
         Cleanup_Stop_Semaphore();
         Cleanup_Interface();
+        Unlock_Interface();
         return 1;
     }
 
@@ -62,9 +70,19 @@ int main(void)
         goto cleanup;
     }
 
-    if (init_Server() != 0) {
-        perror("Initializing endpoints");
+    if (Load_Config() != 0) {
         result = 1;
+        goto cleanup;
+    }
+    if (init_Server() != 0) {
+        if (!Sem_Stop()) {
+            perror("Initializing endpoints");
+            result = 1;
+        }
+        goto cleanup;
+    }
+
+    if (Sem_Stop()) {
         goto cleanup;
     }
 
@@ -108,6 +126,7 @@ int main(void)
     }
 
 cleanup:
+    Cleanup_Config();
     clearQueue(UP_DATA_QUEUE);
     clearQueue(PUB_DATA_QUEUE);
     Cleanup_Logging();
@@ -115,6 +134,7 @@ cleanup:
     pthread_mutex_destroy(&FLAG_Mutx);
     Cleanup_Stop_Semaphore();
     Cleanup_Interface();
+    Unlock_Interface();
     printf("Exiting.\n");
     return result;
 }

@@ -5,6 +5,8 @@
 #include <string.h>
 #include <pthread.h>
 #include <stdlib.h>
+#include <math.h>
+#include <ctype.h>
 
 #include "Shm_Interface.h"
 #include "Sem_Stop.h"
@@ -36,10 +38,13 @@ void *PLC_Interface(void *_)
 
         buffer[n] = '\0';
 
-        char *save;
-        char *name = strtok_r(buffer, ":", &save);
-        char *value = strtok_r(NULL, ":", &save);
-        if (!name || !value) {
+        char *name = buffer;
+        char *value = strchr(buffer, ':');
+        if (!value) {
+            continue;
+        }
+        *value++ = '\0';
+        if (!*name || !*value || strchr(value, ':')) {
             continue;
         }
 
@@ -60,10 +65,30 @@ void *PLC_Interface(void *_)
             continue;
         }
 
+        char *end;
+        errno = 0;
+        double number = strtod(value, &end);
+        bool converted = end != value;
+        while (isspace((unsigned char)*end)) {
+            ++end;
+        }
+        if (!converted || *end || errno == ERANGE || !isfinite(number)) {
+            fprintf(stderr, "Ignoring invalid PLC value for %s\n", name);
+            continue;
+        }
+        pthread_mutex_lock(&FLAG_Mutx);
+        bool ready = CONF.config_captured;
+        pthread_mutex_unlock(&FLAG_Mutx);
+        if (!ready) {
+            continue;
+        }
         pthread_mutex_lock(&DATA_Mutx);
         for (int i = 0; i < MAX_IO; ++i) {
             if (strcmp(UP_DATA[i].Name, name) == 0) {
-                UP_DATA[i].Value = strtod(value, NULL);
+                if (!CO_SIM_OWNED[i]) {
+                    UP_DATA[i].Value = number;
+                    UP_DATA[i].Time = PUB_TIME;
+                }
                 break;
             }
         }

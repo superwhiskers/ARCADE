@@ -1,4 +1,6 @@
 cflags = -D_POSIX_C_SOURCE=200809L -O2 -flto -std=c11 -Wall -Werror
+
+# -lrt needs to be removed on macos iirc
 ldflags = -lpthread -lzmq -lrt
 
 rule cc
@@ -7,7 +9,7 @@ rule cc
     deps = gcc
 
 rule ld
-    command = cc $cflags $ldflags $in -o $out
+    command = cc $cflags $in -o $out $ldflags
 
 build atomicSet.o: cc atomicSet.c | atomicSet.h
 build cJSON.o: cc cJSON.c | cJSON.h

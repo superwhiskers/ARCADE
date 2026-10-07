@@ -5,18 +5,27 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#include <errno.h>
 
 #include "Sem_Stop.h"
 #include "atomicSet.h"
 
-void UDP_Server(char *msg)
+int UDP_Server(const char *msg)
 {
+    size_t size = strlen(msg);
+    if (size > UDP_MAX_PAYLOAD) {
+        errno = EMSGSIZE;
+        perror("UDP publication");
+        setErrorFlag();
+        Set_Stop();
+        return -1;
+    }
     int sockfd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sockfd < 0) {
         perror("Could not create a socket");
         setErrorFlag();
         Set_Stop();
-        return;
+        return -1;
     }
 
     int broadcastEnable = 1;
@@ -27,7 +36,7 @@ void UDP_Server(char *msg)
         close(sockfd);
         setErrorFlag();
         Set_Stop();
-        return;
+        return -1;
     }
 
     struct sockaddr_in servaddr = {0};
@@ -35,10 +44,21 @@ void UDP_Server(char *msg)
     inet_pton(AF_INET, "255.255.255.255", &servaddr.sin_addr);
     servaddr.sin_port = htons(UDP_PORT);
 
-    sendto(sockfd, msg, strlen(msg), 0, (const struct sockaddr *)(&servaddr),
-           sizeof(servaddr));
-
+    ssize_t sent;
+    do {
+        sent = sendto(sockfd, msg, size, 0, (const struct sockaddr *)&servaddr,
+                      sizeof(servaddr));
+    } while (sent < 0 && errno == EINTR);
+    int saved = errno;
     close(sockfd);
+    if (sent < 0 || (size_t)sent != size) {
+        errno = sent < 0 ? saved : EIO;
+        perror("Sending UDP publication");
+        setErrorFlag();
+        Set_Stop();
+        return -1;
+    }
+    return 0;
 }
 
 void UDP_Stop(void)

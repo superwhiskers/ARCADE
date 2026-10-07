@@ -49,11 +49,14 @@ Timestamped_Data dequeue(Queue *q);
 /// Check if the queue is empty.
 int isEmpty(Queue *q);
 
-/// Empty the queue.
+/// Free the queue and all remaining elements.
 void clearQueue(Queue *q);
 
-/// Initialize a queue.
-Queue *createQueue();
+/// Allocate a new queue.
+///
+/// The caller is responsible for freeing the memory using
+/// `clearQueue`. Returns NULL on failure.
+Queue *createQueue(void);
 
 /// Signal the data aggregation thread that data is done being produced.
 void Finish_Logging(void);

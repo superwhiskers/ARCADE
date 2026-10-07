@@ -73,13 +73,25 @@ void *Data_Aggregator(void *_)
     }
     const char *header = CONF.Realtime_Timestep ? "Name,Value,Time,RealTime\n"
                                                 : "Name,Value,Time\n";
+
+    // disable buffering to avoid masking disk errors
+    setvbuf(up, NULL, _IOLBF, 0);
+    setvbuf(pub, NULL, _IOLBF, 0);
     fputs(header, up);
     fputs(header, pub);
+
+    int failed = 0;
 
     while (!atomic_load(&PRODUCER_DONE) || !isEmpty(PUB_DATA_QUEUE) ||
            !isEmpty(UP_DATA_QUEUE)) {
         log_queue(pub, PUB_DATA_QUEUE);
         log_queue(up, UP_DATA_QUEUE);
+        if (ferror(up) || ferror(pub)) {
+            perror("Writing data logs");
+            Set_Stop();
+            failed = 1;
+            break;
+        }
         if (checkErrorFlag()) {
             Set_Stop();
         }
@@ -91,7 +103,9 @@ void *Data_Aggregator(void *_)
         }
         pthread_mutex_unlock(&LOG_LOCK);
     }
-    int failed = fclose(up) != 0;
+    if (fclose(up) != 0) {
+        failed = 1;
+    }
     if (fclose(pub) != 0) {
         failed = 1;
     }
@@ -99,7 +113,7 @@ void *Data_Aggregator(void *_)
     return failed ? (void *)-1 : NULL;
 }
 
-Queue *createQueue()
+Queue *createQueue(void)
 {
     Queue *q = (Queue *)malloc(sizeof(Queue));
     if (q == NULL) {

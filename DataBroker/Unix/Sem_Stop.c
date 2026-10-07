@@ -2,8 +2,29 @@
 
 #include <stdio.h>
 #include <fcntl.h>
+#include <signal.h>
+#include <stdatomic.h>
+#include <stdbool.h>
 
 sem_t *stop;
+static atomic_int signal_stop;
+static atomic_bool local_stop = false;
+
+_Static_assert(ATOMIC_INT_LOCK_FREE == 2, "A signal flag must not require a lock");
+
+static void stop_signal(int signal_number)
+{
+    (void)signal_number;
+    atomic_store(&signal_stop, 1);
+}
+
+int Init_Stop_Signals(void)
+{
+    struct sigaction action = {0};
+    action.sa_handler = stop_signal;
+    sigemptyset(&action.sa_mask);
+    return sigaction(SIGINT, &action, NULL) || sigaction(SIGTERM, &action, NULL) ? -1 : 0;
+}
 
 void Init_Stop_Semaphore(void)
 {
@@ -25,6 +46,12 @@ void Cleanup_Stop_Semaphore(void)
 
 int Sem_Stop(void)
 {
+    if (atomic_load(&signal_stop)) {
+        Set_Stop();
+    }
+    if (atomic_load(&local_stop)) {
+        return 1;
+    }
     if (stop == NULL) {
         return 0;
     }
@@ -53,6 +80,9 @@ int Sem_Stop(void)
 
 void Set_Stop(void)
 {
+    if (atomic_exchange(&local_stop, true)) {
+        return;
+    }
     if (stop == NULL) {
         fprintf(stderr, "Stop semaphore not initialized.\n");
         return;

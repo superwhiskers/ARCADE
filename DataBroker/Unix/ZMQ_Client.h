@@ -6,7 +6,7 @@
 /// Mapping of string names to output indices.
 typedef struct {
     /// Name of output.
-    char tag[65];
+    char tag[128];
 
     /// Index of output inside the `PUB_DATA` structure.
     int index;
@@ -14,3 +14,6 @@ typedef struct {
 
 /// Function to run the ZeroMQ thread.
 void *ZMQ_Client(void *);
+
+/// Reserve configured inputs. Returns zero on success or -1 on error.
+int CoSim_ReserveInputs(int count);

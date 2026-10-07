@@ -31,6 +31,7 @@
               pkgs.czmq
 
               pkgs.cppzmq
+              (pkgs.python3.withPackages (ps: [ ps.pyzmq ]))
             ];
           };
         }

@@ -4,6 +4,11 @@
 
 extern sem_t *stop;
 
+/// Install SIGINT/SIGTERM cancellation handlers before initialization.
+///
+/// Returns 0 on success, -1 on error.
+int Init_Stop_Signals(void);
+
 /// Initialize the stop semaphore.
 void Init_Stop_Semaphore(void);
 

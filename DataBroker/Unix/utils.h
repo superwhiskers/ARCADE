@@ -4,6 +4,7 @@
 #include <pthread.h>
 #include <errno.h>
 #include <zmq.h>
+#include <semaphore.h>
 
 /// Retry `expr` on `EINTR`, placing the result into `result`.
 #define RETRY_EINTR(result, expr) \
@@ -24,16 +25,20 @@ enum { WAIT_ERROR = -1,
 
 /// Wait on a semaphore.
 ///
-/// `wait_limit` is specified in seconds. Setting it to zero disables the
-/// deadline. One of `WAIT_ERROR`, `WAIT_OK`, or `WAIT_STOPPED` will be
-/// returned.
-int sem_wait_safe(void *arg, int wait_limit);
+/// `wait_limit` is specified in seconds, with zero disabling the deadline. One
+/// of `WAIT_ERROR`, `WAIT_OK`, or `WAIT_STOPPED` will be returned.
+int sem_wait_safe(sem_t *sem, int wait_limit);
 
-/// Configure a ZeroMQ socket.
+/// Configure a ZeroMQ socket. Returns zero on success or -1 on error.
 int zmq_configure(void *socket);
 
 /// Exchange a message over a ZeroMQ socket and wait for a reply.
-int zmq_exchange(void *socket, const char *request, zmq_msg_t *reply);
+///
+/// `timeout` is specified in seconds, with zero disabling it.
+/// One of `WAIT_ERROR`, `WAIT_OK`, or `WAIT_STOPPED` will be returned. The
+/// caller is responsible for initializing and closing `reply`. Close the socket
+/// on error.
+int zmq_exchange(void *socket, const char *request, zmq_msg_t *reply, int timeout);
 
 /// Flags controlling simulation disposition.
 typedef struct {
@@ -55,7 +60,10 @@ typedef struct {
     /// Whether to log the time at which data is received.
     bool Realtime_Timestep;
 
+    /// Number of update points.
     int UP_N;
+
+    /// Number of publish points.
     int PUB_N;
 
     /// Duration between timesteps in the simulation.
@@ -63,6 +71,21 @@ typedef struct {
 
     /// Whether or not the configuration has been captured.
     bool config_captured;
+
+    /// Endpoint timeout in seconds.
+    ///
+    /// Zero disables the deadline.
+    int Endpoint_Timeout;
+
+    /// Publication timeout in seconds.
+    ///
+    /// Zero disables the deadline.
+    int Publish_Timeout;
+
+    /// Co-simulation timeout in seconds.
+    ///
+    /// Zero disables the deadline.
+    int Exchange_Timeout;
 } Configs;
 
 /// Global containing the configuration.
